@@ -261,6 +261,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
       <div class="stat">
         <div class="k"><span class="dot" style="background:var(--expense)"></span>지출</div>
         <div class="v neg mono" id="sExpense">₩0</div>
+        <div class="sub" id="sExpenseSub"></div>
       </div>
       <div class="stat">
         <div class="k"><span class="dot" style="background:var(--amber)"></span>잔액</div>
@@ -408,7 +409,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
       <select class="inp" id="acctType">
         <option value="cash">현금</option><option value="bank">은행</option>
         <option value="card">카드</option><option value="invest">투자</option>
-        <option value="etc">기타</option>
+        <option value="saving">적금</option><option value="etc">기타</option>
       </select>
     </div>
     <div class="field"><label>초기 잔액</label>
@@ -448,6 +449,8 @@ const DEF_CATS={
     {id:"c_health",name:"의료·건강",icon:"💊",color:"#55efc4"},
     {id:"c_shop",name:"쇼핑",icon:"🛍️",color:"#fd79a8"},
     {id:"c_event",name:"경조사",icon:"🎁",color:"#fab1a0"},
+    {id:"c_loan",name:"대출",icon:"🏦",color:"#636e72"},
+    {id:"c_insure",name:"보험",icon:"🛡️",color:"#00b894"},
     {id:"c_etc",name:"기타",icon:"📦",color:"#95a5a6"}
   ],
   income:[
@@ -458,15 +461,16 @@ const DEF_CATS={
     {id:"i_etc",name:"기타",icon:"📥",color:"#95a5a6"}
   ]
 };
-const ACCT_ICONS={cash:"💵",bank:"🏦",card:"💳",invest:"📊",etc:"📁"};
-const ACCT_NAMES={cash:"현금",bank:"은행",card:"카드",invest:"투자",etc:"기타"};
+const ACCT_ICONS={cash:"💵",bank:"🏦",card:"💳",invest:"📊",saving:"🐖",etc:"📁"};
+const ACCT_NAMES={cash:"현금",bank:"은행",card:"카드",invest:"투자",saving:"적금",etc:"기타"};
 const ACCT_COLORS=["#f5a623","#58a6ff","#3fb950","#e056fd","#ff6b6b","#00cec9","#fdcb6e","#a29bfe"];
 
 function defaultState(){
   return {
     accounts:[
       {id:"a_cash",name:"현금",type:"cash",init:0,color:ACCT_COLORS[0]},
-      {id:"a_bank",name:"주거래 은행",type:"bank",init:0,color:ACCT_COLORS[1]}
+      {id:"a_bank",name:"주거래 은행",type:"bank",init:0,color:ACCT_COLORS[1]},
+      {id:"a_saving",name:"적금통장",type:"saving",init:0,color:ACCT_COLORS[2]}
     ],
     categories:JSON.parse(JSON.stringify(DEF_CATS)),
     transactions:[],
@@ -523,7 +527,8 @@ function monthAgg(d){
     else if(t.type==="expense"){expense+=t.amount;
       byCat[t.category]=(byCat[t.category]||0)+t.amount;}
   }
-  return {income,expense,net:income-expense,byCat};
+  const loanAmt=byCat["c_loan"]||0;
+  return {income,expense,net:income-expense,byCat,loanAmt,expenseExLoan:expense-loanAmt};
 }
 
 /* ================= RENDER ================= */
@@ -545,6 +550,7 @@ function renderDash(){
   const m=monthAgg(cur);
   $("#sIncome").textContent=won(m.income);
   $("#sExpense").textContent=won(m.expense);
+  $("#sExpenseSub").textContent=m.loanAmt>0?"대출 제외 "+won(m.expenseExLoan):"";
   $("#sNet").textContent=won(m.net);
   $("#sNet").className="v mono "+(m.net>=0?"pos":m.net<0?"neg":"");
   $("#sRate").textContent=m.income>0?"저축률 "+Math.round(m.net/m.income*100)+"%":"";
