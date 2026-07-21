@@ -480,7 +480,23 @@ function defaultState(){
 let S=load();
 function load(){
   try{const d=JSON.parse(localStorage.getItem(KEY));
-    if(d&&d.accounts)return d;}catch(e){}
+    if(d&&d.accounts){
+      // 새로 추가된 기본 카테고리를 기존 데이터에 자동 병합
+      d.categories=d.categories||JSON.parse(JSON.stringify(DEF_CATS));
+      for(const t of ["expense","income"]){
+        d.categories[t]=d.categories[t]||[];
+        for(const def of DEF_CATS[t]){
+          if(!d.categories[t].some(c=>c.id===def.id)){
+            // 기타 앞에 삽입 (기타는 항상 맨 끝 유지)
+            const etcIdx=d.categories[t].findIndex(c=>/etc$/.test(c.id));
+            if(etcIdx>=0)d.categories[t].splice(etcIdx,0,def);
+            else d.categories[t].push(def);
+          }
+        }
+      }
+      return d;
+    }
+  }catch(e){}
   return defaultState();
 }
 function save(){localStorage.setItem(KEY,JSON.stringify(S));}
