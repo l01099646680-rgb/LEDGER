@@ -323,7 +323,26 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
   </section>
 
   <!-- ============ SETTINGS ============ -->
+  <section class="view" id="view-inbox">
+    <div class="section-h"><span class="t">카드 결제 수신함</span><span class="rule"></span>
+      <button class="mini" id="refreshInbox">새로고침</button></div>
+    <div id="inboxStatus" class="mono" style="font-size:11px;color:var(--muted2);text-align:center;margin-bottom:12px"></div>
+    <div id="inboxList"></div>
+    <div class="hint" style="margin-top:16px">폰에서 카드로 결제하면 자동으로 여기 쌓입니다.<br>카테고리를 확인하고 <b style="color:var(--text)">등록</b>을 누르면 내역에 기록됩니다.</div>
+  </section>
+
   <section class="view" id="view-set">
+    <div class="section-h"><span class="t">카드 연동</span><span class="rule"></span></div>
+    <div class="card" style="padding:4px 16px">
+      <div class="setrow">
+        <div><div class="sl">Worker 주소</div><div class="sd">카드 결제가 저장되는 서버</div></div>
+        <button class="mini" id="editWorker">설정</button>
+      </div>
+      <div class="setrow">
+        <div><div class="sl">연결 상태</div><div class="sd" id="workerStatus">미설정</div></div>
+        <button class="mini" id="testWorker">테스트</button>
+      </div>
+    </div>
     <div class="section-h"><span class="t">데이터</span><span class="rule"></span></div>
     <div class="card" style="padding:4px 16px">
       <div class="setrow">
@@ -351,6 +370,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 <nav>
   <button class="on" data-view="dash"><span class="ni">◧</span><span class="nl">대시보드</span></button>
   <button data-view="tx"><span class="ni">≣</span><span class="nl">내역</span></button>
+  <button data-view="inbox"><span class="ni">◉</span><span class="nl">수신함</span></button>
   <button data-view="acct"><span class="ni">◈</span><span class="nl">계좌</span></button>
   <button data-view="budget"><span class="ni">◔</span><span class="nl">예산</span></button>
   <button data-view="set"><span class="ni">⚙</span><span class="nl">설정</span></button>
@@ -546,6 +566,141 @@ function monthAgg(d){
   const loanAmt=byCat["c_loan"]||0;
   return {income,expense,net:income-expense,byCat,loanAmt,expenseExLoan:expense-loanAmt};
 }
+
+/* ================= 카드 연동 (Worker) ================= */
+const WKEY="ledger_worker";
+function getWorker(){try{return JSON.parse(localStorage.getItem(WKEY))||{};}catch(e){return {};}}
+function setWorker(o){localStorage.setItem(WKEY,JSON.stringify(o));}
+// 가맹점 텍스트로 지출 카테고리 추정 (Worker와 동일 규칙의 간이 버전)
+function guessCatLocal(text){
+  const s=text||"";
+  const rules=[
+    [/스타벅스|투썸|이디야|메가|빽다방|공차|커피|카페|파리바게|뚜레쥬르/,"c_cafe"],
+    [/배민|요기요|쿠팡이츠|맥도날드|버거킹|롯데리아|맘스터치|김밥|분식|치킨|피자|식당|GS25|CU|씨유|세븐일레븐|편의점/,"c_food"],
+    [/이마트|홈플러스|롯데마트|코스트코|하나로|마트/,"c_life"],
+    [/올리브영|다이소|무신사|쿠팡|11번가|G마켓|백화점|쇼핑/,"c_shop"],
+    [/택시|버스|지하철|코레일|SRT|KTX|주유|칼텍스|에너지|하이패스/,"c_trans"],
+    [/CGV|메가박스|롯데시네마|넷플릭스|유튜브|PC방|노래방/,"c_fun"],
+    [/약국|병원|의원|치과|한의원|헬스|피트니스/,"c_health"],
+    [/통신|전기|가스|수도|관리비|월세/,"c_home"],
+    [/대출|이자|원리금|캐피탈|카드론|리볼빙/,"c_loan"],
+    [/보험|화재|손해|생명|실손/,"c_insure"],
+  ];
+  for(const [re,cat] of rules)if(re.test(s))return cat;
+  return null;
+}
+
+async function loadInbox(){
+  const w=getWorker();
+  const list=$("#inboxList"),st=$("#inboxStatus");
+  if(!w.url||!w.key){
+    st.textContent="";
+    list.innerHTML=`<div class="empty"><div class="ei">◍</div>
+      <div class="em">먼저 설정 탭에서 Worker 주소를 등록하세요</div></div>`;
+    return;
+  }
+  st.textContent="불러오는 중…";
+  try{
+    const r=await fetch(w.url.replace(/\/+$/,"")+"/pending?k="+encodeURIComponent(w.key));
+    const d=await r.json();
+    if(!d.ok)throw 0;
+    const items=(d.items||[]).sort((a,b)=>b.createdAt-a.createdAt);
+    st.textContent=items.length?items.length+"건 대기 중":"";
+    if(!items.length){
+      list.innerHTML=`<div class="empty"><div class="ei">✓</div>
+        <div class="em">새 결제 내역이 없습니다</div></div>`;return;
+    }
+    list.innerHTML=items.map(it=>{
+      const cat=it.category||guessCatLocal(it.merchant+" "+(it.raw||""));
+      const c=cat?catById(cat):{name:"미분류",icon:"❓",color:"#888"};
+      const acctOpts=S.accounts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");
+      const catOpts=S.categories.expense.map(cc=>
+        `<option value="${cc.id}"${cc.id===cat?" selected":""}>${cc.icon} ${cc.name}</option>`).join("");
+      return `<div class="card" style="margin-bottom:10px;padding:13px 14px" data-inbox="${it.id}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:600">${esc(it.merchant||"미상")}
+            ${it.type==="cancel"?'<span style="color:var(--transfer);font-size:11px"> (취소)</span>':''}</div>
+          <div class="mono neg" style="font-size:15px;font-weight:600">${won(it.amount)}</div>
+        </div>
+        <div style="font-size:11px;color:var(--muted2);margin-bottom:10px" class="mono">${esc(it.issuer||"")} · ${it.date}</div>
+        <div class="row2" style="margin-bottom:10px">
+          <select class="inp ib-cat" style="padding:9px 12px">${catOpts}</select>
+          <select class="inp ib-acct" style="padding:9px 12px">${acctOpts}</select>
+        </div>
+        <div class="btnrow">
+          <button class="btn ghost ib-skip" style="flex:0 0 80px;padding:11px">삭제</button>
+          <button class="btn ib-add" style="padding:11px">등록</button>
+        </div>
+      </div>`;
+    }).join("");
+    // 이벤트 연결
+    list.querySelectorAll("[data-inbox]").forEach(card=>{
+      const id=card.dataset.inbox;
+      const it=items.find(x=>x.id===id);
+      card.querySelector(".ib-add").onclick=()=>inboxRegister(it,card,w);
+      card.querySelector(".ib-skip").onclick=()=>inboxDelete(id,card,w);
+    });
+  }catch(e){
+    st.textContent="";
+    list.innerHTML=`<div class="empty"><div class="ei">⚠</div>
+      <div class="em">연결 실패 — 설정에서 주소를 확인하세요</div></div>`;
+  }
+}
+async function inboxRegister(it,card,w){
+  const cat=card.querySelector(".ib-cat").value;
+  const acct=card.querySelector(".ib-acct").value;
+  // 취소 건은 수입(환불)로, 일반은 지출로
+  S.transactions.push({
+    id:uid(),
+    type:it.type==="cancel"?"income":"expense",
+    amount:it.amount,
+    category:cat,
+    account:acct,
+    toAccount:null,
+    date:it.date,
+    memo:(it.merchant||"")+(it.type==="cancel"?" 취소":"")
+  });
+  save();
+  await inboxDelete(it.id,card,w,true);
+  renderAll();
+  toast("등록됐습니다");
+}
+async function inboxDelete(id,card,w,silent){
+  try{
+    await fetch(w.url.replace(/\/+$/,"")+"/confirm?k="+encodeURIComponent(w.key),{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id})});
+  }catch(e){}
+  card.style.transition=".2s";card.style.opacity="0";card.style.height="0";
+  setTimeout(()=>{card.remove();
+    const left=$("#inboxList").querySelectorAll("[data-inbox]").length;
+    $("#inboxStatus").textContent=left?left+"건 대기 중":"";
+    if(!left)$("#inboxList").innerHTML=`<div class="empty"><div class="ei">✓</div>
+      <div class="em">새 결제 내역이 없습니다</div></div>`;
+  },200);
+  if(!silent)toast("삭제됐습니다");
+}
+$("#refreshInbox").onclick=loadInbox;
+$("#editWorker").onclick=()=>{
+  const w=getWorker();
+  const url=prompt("Worker 주소 (예: https://132.attp132.workers.dev)",w.url||"");
+  if(url===null)return;
+  const key=prompt("SECRET 키",w.key||"");
+  if(key===null)return;
+  setWorker({url:url.trim(),key:key.trim()});
+  renderSettings();toast("저장됐습니다");
+};
+$("#testWorker").onclick=async()=>{
+  const w=getWorker();
+  if(!w.url||!w.key){toast("먼저 주소를 설정하세요");return;}
+  $("#workerStatus").textContent="확인 중…";
+  try{
+    const r=await fetch(w.url.replace(/\/+$/,"")+"/?k="+encodeURIComponent(w.key));
+    const d=await r.json();
+    $("#workerStatus").textContent=d.ok?"정상 연결됨 ✓":"인증 실패";
+    toast(d.ok?"연결 성공":"키가 맞지 않습니다");
+  }catch(e){$("#workerStatus").textContent="연결 실패";toast("주소를 확인하세요");}
+};
 
 /* ================= RENDER ================= */
 function renderAll(){
@@ -780,6 +935,9 @@ function renderSettings(){
      계좌 수 &nbsp; <b style="color:var(--text)">${S.accounts.length}</b><br>
      첫 기록 &nbsp; <b style="color:var(--text)">${first}</b><br>
      데이터 크기 &nbsp; <b style="color:var(--text)">${(JSON.stringify(S).length/1024).toFixed(1)} KB</b>`;
+  const w=getWorker();
+  const ws=$("#workerStatus");
+  if(ws)ws.textContent=w.url?"설정됨":"미설정";
 }
 
 /* ================= SHEETS ================= */
@@ -937,6 +1095,7 @@ function switchView(v){
   $("#view-"+v).classList.add("active");
   $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.view===v));
   window.scrollTo(0,0);
+  if(v==="inbox")loadInbox();
 }
 $$("nav button").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 
