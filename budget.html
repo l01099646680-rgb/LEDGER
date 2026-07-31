@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>가계부 · LEDGER</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LEDGER">
+<meta name="theme-color" content="#0a0e14">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='114' fill='%230a0e14'/%3E%3Crect x='34' y='34' width='444' height='444' rx='84' fill='none' stroke='%23f5a623' stroke-width='14'/%3E%3Ctext x='256' y='300' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='210' font-weight='700' fill='%23f5a623' text-anchor='middle'%3E%E2%82%A9%3C/text%3E%3Crect x='150' y='348' width='212' height='16' rx='8' fill='%23f5a623' opacity='0.55'/%3E%3Crect x='186' y='386' width='140' height='16' rx='8' fill='%23f5a623' opacity='0.3'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='114' fill='%230a0e14'/%3E%3Crect x='34' y='34' width='444' height='444' rx='84' fill='none' stroke='%23f5a623' stroke-width='14'/%3E%3Ctext x='256' y='300' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='210' font-weight='700' fill='%23f5a623' text-anchor='middle'%3E%E2%82%A9%3C/text%3E%3Crect x='150' y='348' width='212' height='16' rx='8' fill='%23f5a623' opacity='0.55'/%3E%3Crect x='186' y='386' width='140' height='16' rx='8' fill='%23f5a623' opacity='0.3'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
 <style>
@@ -458,6 +465,30 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 
 <script>
 "use strict";
+/* ---------- PWA 매니페스트 (홈 화면 아이콘용) ---------- */
+(function(){
+  const ICON="data:image/svg+xml,"+encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'>"+
+    "<rect width='512' height='512' rx='114' fill='#0a0e14'/>"+
+    "<rect x='34' y='34' width='444' height='444' rx='84' fill='none' stroke='#f5a623' stroke-width='14'/>"+
+    "<text x='256' y='300' font-family='ui-monospace,Menlo,Consolas,monospace' font-size='210' font-weight='700' fill='#f5a623' text-anchor='middle'>\u20A9</text>"+
+    "<rect x='150' y='348' width='212' height='16' rx='8' fill='#f5a623' opacity='0.55'/>"+
+    "<rect x='186' y='386' width='140' height='16' rx='8' fill='#f5a623' opacity='0.3'/>"+
+    "</svg>");
+  const mf={
+    name:"LEDGER 가계부",short_name:"LEDGER",
+    start_url:location.pathname,display:"standalone",
+    background_color:"#0a0e14",theme_color:"#0a0e14",
+    icons:[
+      {src:ICON,sizes:"192x192",type:"image/svg+xml",purpose:"any"},
+      {src:ICON,sizes:"512x512",type:"image/svg+xml",purpose:"any maskable"}
+    ]
+  };
+  const link=document.createElement("link");
+  link.rel="manifest";
+  link.href=URL.createObjectURL(new Blob([JSON.stringify(mf)],{type:"application/json"}));
+  document.head.appendChild(link);
+})();
 const KEY="ledger_v1";
 const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
 
