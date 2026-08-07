@@ -686,16 +686,19 @@ async function loadInbox(){
         <div class="em">새 결제 내역이 없습니다</div></div>`;return;
     }
     list.innerHTML=items.map(it=>{
-      const cat=it.category||guessCatLocal(it.merchant+" "+(it.raw||""));
-      const c=cat?catById(cat):{name:"미분류",icon:"❓",color:"#888"};
+      const isIncome=it.type==="income";
+      const cat=it.category||(isIncome?null:guessCatLocal(it.merchant+" "+(it.raw||"")));
       const acctOpts=S.accounts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");
-      const catOpts=S.categories.expense.map(cc=>
+      const catList=isIncome?S.categories.income:S.categories.expense;
+      const catOpts=catList.map(cc=>
         `<option value="${cc.id}"${cc.id===cat?" selected":""}>${cc.icon} ${cc.name}</option>`).join("");
+      const badge=isIncome
+        ?'<span style="color:var(--income);font-size:11px"> (입금)</span>'
+        :(it.type==="cancel"?'<span style="color:var(--transfer);font-size:11px"> (취소)</span>':'');
       return `<div class="card" style="margin-bottom:10px;padding:13px 14px" data-inbox="${it.id}">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <div style="font-size:13px;font-weight:600">${esc(it.merchant||"미상")}
-            ${it.type==="cancel"?'<span style="color:var(--transfer);font-size:11px"> (취소)</span>':''}</div>
-          <div class="mono neg" style="font-size:15px;font-weight:600">${won(it.amount)}</div>
+          <div style="font-size:13px;font-weight:600">${esc(it.merchant||"미상")}${badge}</div>
+          <div class="mono ${isIncome?"pos":"neg"}" style="font-size:15px;font-weight:600">${isIncome?"+":""}${won(it.amount)}</div>
         </div>
         <div style="font-size:11px;color:var(--muted2);margin-bottom:10px" class="mono">${esc(it.issuer||"")} · ${it.date}</div>
         <div class="row2" style="margin-bottom:10px">
@@ -727,7 +730,7 @@ async function inboxRegister(it,card,w){
   // 취소 건은 수입(환불)로, 일반은 지출로
   S.transactions.push({
     id:uid(),
-    type:it.type==="cancel"?"income":"expense",
+    type:(it.type==="cancel"||it.type==="income")?"income":"expense",
     amount:it.amount,
     category:cat,
     account:acct,
