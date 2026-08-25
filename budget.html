@@ -665,6 +665,128 @@ function guessCatLocal(text){
   return null;
 }
 
+const INBOX_DUP_WINDOW=3*60*1000;
+function normalizeInboxText(value){
+  return String(value||"").toLowerCase()
+    .replace(/\(주\)|주식회사/g,"")
+    .replace(/[\s()[\]{}.,:;·\-_/\\*#]+/g,"");
+}
+function inboxDirection(it){
+  return it.type==="cancel"||it.type==="income"?"income":"expense";
+}
+function inboxSource(it){
+  const issuer=String(it.issuer||"");
+  const text=issuer+" "+String(it.raw||"");
+  if(/스타뱅킹|올원뱅크|스마트뱅킹|뱅크|은행|bank/i.test(issuer))return "bank";
+  if(/카드|kb\s*pay|nh\s*pay|신한\s*pay|card/i.test(issuer))return "card";
+  if(/출금|입금|잔액|계좌|통장|이체|송금|자동이체|cms/i.test(text))return "bank";
+  if(/승인|결제|카드|체크|일시불|할부|\bpay\b/i.test(text))return "card";
+  return "unknown";
+}
+function inboxTimeParts(value){
+  const match=String(value||"").match(/(?:^|[^\d])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?=$|[^\d])/);
+  return match?[Number(match[1]),Number(match[2]),Number(match[3]||0)]:null;
+}
+function inboxTimestamp(it){
+  const date=String(it.date||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const time=inboxTimeParts(it.time)||inboxTimeParts(it.raw);
+  if(date&&time){
+    return new Date(Number(date[1]),Number(date[2])-1,Number(date[3]),
+      time[0],time[1],time[2]).getTime();
+  }
+  const created=Number(it.createdAt);
+  if(Number.isFinite(created)&&created>0)return created<1e12?created*1000:created;
+  const parsed=Date.parse(String(it.createdAt||""));
+  return Number.isFinite(parsed)?parsed:null;
+}
+function inboxRawFingerprint(it){
+  const text=normalizeInboxText(it.raw);
+  if(!text)return "";
+  let hash=2166136261;
+  for(let i=0;i<text.length;i++){
+    hash^=text.charCodeAt(i);
+    hash=Math.imul(hash,16777619);
+  }
+  return (hash>>>0).toString(36);
+}
+function isGenericInboxMerchant(value){
+  const merchant=normalizeInboxText(value);
+  return !merchant||/^(미상|알수없음|출금|입금|이체|송금|결제|카드결제|체크카드|국민카드|kb국민|국민은행|kb국민은행|nh농협|농협은행)$/.test(merchant);
+}
+function sameInboxTransaction(a,b){
+  if(String(a.id)===String(b.id))return true;
+  if(Number(a.amount)!==Number(b.amount)||String(a.date)!==String(b.date)||
+      inboxDirection(a)!==inboxDirection(b))return false;
+  const rawA=inboxRawFingerprint(a),rawB=inboxRawFingerprint(b);
+  if(rawA&&rawA===rawB)return true;
+  const at=inboxTimestamp(a),bt=inboxTimestamp(b);
+  if(at===null||bt===null||Math.abs(at-bt)>INBOX_DUP_WINDOW)return false;
+  const merchantA=normalizeInboxText(a.merchant),merchantB=normalizeInboxText(b.merchant);
+  if(merchantA&&merchantB&&merchantA===merchantB)return true;
+  const sourceA=inboxSource(a),sourceB=inboxSource(b);
+  if((sourceA==="card"&&sourceB==="bank")||(sourceA==="bank"&&sourceB==="card"))return true;
+  const issuerA=normalizeInboxText(a.issuer),issuerB=normalizeInboxText(b.issuer);
+  return Boolean(issuerA&&issuerA===issuerB&&Math.abs(at-bt)<=15000&&
+    (isGenericInboxMerchant(a.merchant)||isGenericInboxMerchant(b.merchant)));
+}
+function inboxItemScore(it){
+  return (isGenericInboxMerchant(it.merchant)?0:40)+
+    (inboxSource(it)==="card"?20:0)+(it.type==="cancel"?5:0)+
+    (it.time?3:0)+(it.raw?2:0);
+}
+function groupInboxItems(items){
+  const groups=[];
+  for(const rawItem of items){
+    const item={...rawItem,inboxIds:[String(rawItem.id)]};
+    const index=groups.findIndex(existing=>sameInboxTransaction(existing,item));
+    if(index<0){groups.push(item);continue;}
+    const existing=groups[index];
+    const ids=[...new Set([...existing.inboxIds,...item.inboxIds])];
+    if(inboxItemScore(item)>inboxItemScore(existing)){
+      item.inboxIds=ids;groups[index]=item;
+    }else existing.inboxIds=ids;
+  }
+  return groups;
+}
+function findRegisteredInboxTransaction(it){
+  const sourceIds=new Set((it.inboxIds||[it.id]).map(String));
+  const fingerprint=inboxRawFingerprint(it);
+  const merchant=normalizeInboxText(it.merchant);
+  const time=inboxTimestamp(it);
+  return S.transactions.find(tx=>{
+    if(Number(tx.amount)!==Number(it.amount)||String(tx.date)!==String(it.date)||
+        tx.type!==inboxDirection(it))return false;
+    if((tx.inboxIds||[]).some(id=>sourceIds.has(String(id))))return true;
+    if(fingerprint&&tx.inboxFingerprint===fingerprint)return true;
+    const txTime=inboxTimestamp({date:tx.date,time:tx.inboxTime||tx.memo});
+    if(time===null||txTime===null||Math.abs(time-txTime)>INBOX_DUP_WINDOW)return false;
+    const txMerchant=normalizeInboxText(String(tx.memo||"")
+      .replace(/(?:^|\s)([01]?\d|2[0-3]):[0-5]\d(?=\s|$)/g," ")
+      .replace(/\s*취소\s*$/,""));
+    if(merchant&&txMerchant&&(merchant===txMerchant||
+        merchant.includes(txMerchant)||txMerchant.includes(merchant)))return true;
+    const source=inboxSource(it);
+    return (source==="card"||source==="bank")&&
+      (!tx.inboxSource||tx.inboxSource!==source);
+  })||null;
+}
+async function confirmInboxIds(ids,w){
+  const failed=[];
+  for(const id of new Set(ids.map(String))){
+    try{
+      const response=await fetch(w.url.replace(/\/+$/,"")+"/confirm?k="+
+        encodeURIComponent(w.key),{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({id})
+        });
+      if(!response.ok){failed.push(id);continue;}
+      try{const result=await response.json();if(result.ok===false)failed.push(id);}
+      catch(e){/* 일부 이전 Worker 버전은 응답 본문이 없음 */}
+    }catch(e){failed.push(id);}
+  }
+  return failed;
+}
+
 async function loadInbox(){
   const w=getWorker();
   const list=$("#inboxList"),st=$("#inboxStatus");
@@ -679,8 +801,14 @@ async function loadInbox(){
     const r=await fetch(w.url.replace(/\/+$/,"")+"/pending?k="+encodeURIComponent(w.key));
     const d=await r.json();
     if(!d.ok)throw 0;
-    const items=(d.items||[]).sort((a,b)=>b.createdAt-a.createdAt);
-    st.textContent=items.length?items.length+"건 대기 중":"";
+    const pending=(d.items||[]).sort((a,b)=>b.createdAt-a.createdAt);
+    const grouped=groupInboxItems(pending);
+    const registered=grouped.filter(it=>findRegisteredInboxTransaction(it));
+    for(const it of registered)await confirmInboxIds(it.inboxIds,w);
+    const items=grouped.filter(it=>!registered.includes(it));
+    const duplicateCount=items.reduce((count,it)=>count+it.inboxIds.length-1,0);
+    st.textContent=items.length?items.length+"건 대기 중"+
+      (duplicateCount?" · 중복 "+duplicateCount+"건 묶음":""):"";
     if(!items.length){
       list.innerHTML=`<div class="empty"><div class="ei">✓</div>
         <div class="em">새 결제 내역이 없습니다</div></div>`;return;
@@ -716,7 +844,7 @@ async function loadInbox(){
       const id=card.dataset.inbox;
       const it=items.find(x=>x.id===id);
       card.querySelector(".ib-add").onclick=()=>inboxRegister(it,card,w);
-      card.querySelector(".ib-skip").onclick=()=>inboxDelete(id,card,w);
+      card.querySelector(".ib-skip").onclick=()=>inboxDelete(it,card,w);
     });
   }catch(e){
     st.textContent="";
@@ -725,6 +853,15 @@ async function loadInbox(){
   }
 }
 async function inboxRegister(it,card,w){
+  if(card.dataset.processing==="1")return;
+  card.dataset.processing="1";
+  card.querySelector(".ib-add").disabled=true;
+  card.querySelector(".ib-skip").disabled=true;
+  if(findRegisteredInboxTransaction(it)){
+    await inboxDelete(it,card,w,true);
+    toast("이미 등록된 내역입니다");
+    return;
+  }
   const cat=card.querySelector(".ib-cat").value;
   const acct=card.querySelector(".ib-acct").value;
   // 취소 건은 수입(환불)로, 일반은 지출로
@@ -736,19 +873,24 @@ async function inboxRegister(it,card,w){
     account:acct,
     toAccount:null,
     date:it.date,
-    memo:(it.merchant||"")+(it.time?" "+it.time:"")+(it.type==="cancel"?" 취소":"")
+    memo:(it.merchant||"")+(it.time?" "+it.time:"")+(it.type==="cancel"?" 취소":""),
+    inboxIds:it.inboxIds||[String(it.id)],
+    inboxTime:it.time||"",
+    inboxSource:inboxSource(it),
+    inboxFingerprint:inboxRawFingerprint(it)
   });
   save();
-  await inboxDelete(it.id,card,w,true);
+  const cleared=await inboxDelete(it,card,w,true);
   renderAll();
-  toast("등록됐습니다");
+  toast(cleared?"등록됐습니다":"등록됐습니다 · 수신함은 다음 연결 때 정리됩니다");
 }
-async function inboxDelete(id,card,w,silent){
-  try{
-    await fetch(w.url.replace(/\/+$/,"")+"/confirm?k="+encodeURIComponent(w.key),{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id})});
-  }catch(e){}
+async function inboxDelete(it,card,w,silent){
+  const ids=it.inboxIds||[String(it.id)];
+  const failed=await confirmInboxIds(ids,w);
+  if(failed.length===ids.length&&!silent){
+    toast("삭제하지 못했습니다. 연결을 확인하세요");
+    return false;
+  }
   card.style.transition=".2s";card.style.opacity="0";card.style.height="0";
   setTimeout(()=>{card.remove();
     const left=$("#inboxList").querySelectorAll("[data-inbox]").length;
@@ -756,7 +898,8 @@ async function inboxDelete(id,card,w,silent){
     if(!left)$("#inboxList").innerHTML=`<div class="empty"><div class="ei">✓</div>
       <div class="em">새 결제 내역이 없습니다</div></div>`;
   },200);
-  if(!silent)toast("삭제됐습니다");
+  if(!silent)toast(failed.length?"삭제됐습니다 · 일부 알림은 다시 확인해주세요":"삭제됐습니다");
+  return failed.length===0;
 }
 $("#refreshInbox").onclick=loadInbox;
 $("#editWorker").onclick=async()=>{
@@ -1114,7 +1257,7 @@ $("#saveTx").onclick=()=>{
     date:$("#dateInput").value,
     memo:$("#memoInput").value.trim()
   };
-  if(id){const i=S.transactions.findIndex(x=>x.id===id);S.transactions[i]=tx;}
+  if(id){const i=S.transactions.findIndex(x=>x.id===id);S.transactions[i]={...S.transactions[i],...tx};}
   else S.transactions.push(tx);
   save();closeSheet();renderAll();toast(id?"수정됐습니다":"저장됐습니다");
 };
