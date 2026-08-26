@@ -87,6 +87,10 @@ main{max-width:760px;margin:0 auto;padding:18px 16px}
 .legend{flex:1;min-width:180px;display:flex;flex-direction:column;gap:2px}
 .leg{display:flex;align-items:center;gap:9px;padding:6px 4px;border-radius:7px}
 .leg:hover{background:var(--surface2)}
+.leg[data-cat]{cursor:pointer;transition:background .15s,transform .15s}
+.leg[data-cat]:active{background:var(--surface2);transform:scale(.99)}
+.donut [data-cat]{cursor:pointer;transition:opacity .15s,stroke-width .15s}
+.donut [data-cat]:hover,.donut [data-cat]:focus{opacity:.78;stroke-width:21;outline:none}
 .leg .sw{width:9px;height:9px;border-radius:2px;flex-shrink:0}
 .leg .nm{flex:1;font-size:13px}
 .leg .pc{font-family:var(--mono);font-size:11px;color:var(--muted);width:38px;text-align:right}
@@ -179,6 +183,14 @@ nav button.on{color:var(--amber)}
 .sheet.show{transform:translateY(0)}
 .handle{width:38px;height:4px;border-radius:3px;background:var(--line2);margin:6px auto 16px}
 .sheet h3{font-size:16px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.category-detail-summary{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;
+  background:var(--surface2);border:1px solid var(--line);border-radius:11px;padding:12px 14px;
+  margin-bottom:10px}
+.category-detail-period{font-size:11px;color:var(--muted);margin-bottom:2px}
+.category-detail-count{font-size:12px;color:var(--muted)}
+.category-detail-total{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--expense);
+  white-space:nowrap}
+.category-detail-hint{font-size:11px;color:var(--muted2);text-align:center;margin-top:14px}
 
 /* type toggle in form */
 .typeseg{display:flex;background:var(--surface2);border-radius:11px;padding:4px;margin-bottom:18px}
@@ -428,6 +440,21 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
     <button class="btn ghost danger" id="deleteTx" style="display:none;flex:0 0 90px">삭제</button>
     <button class="btn" id="saveTx">저장</button>
   </div>
+</div>
+
+<!-- Category expense detail sheet -->
+<div class="sheet" id="categoryDetailSheet">
+  <div class="handle"></div>
+  <h3 id="categoryDetailTitle">카테고리 지출 상세</h3>
+  <div class="category-detail-summary">
+    <div>
+      <div class="category-detail-period" id="categoryDetailPeriod"></div>
+      <div class="category-detail-count" id="categoryDetailCount"></div>
+    </div>
+    <div class="category-detail-total" id="categoryDetailTotal">₩0</div>
+  </div>
+  <div id="categoryDetailList"></div>
+  <div class="category-detail-hint">내역을 누르면 수정할 수 있습니다.</div>
 </div>
 
 <!-- Account sheet -->
@@ -997,17 +1024,74 @@ function drawDonut(donutSel,legSel,byCat,total,centerLabel){
     const frac=e.amt/total, dash=frac*C;
     arcs+=`<circle cx="${size/2}" cy="${size/2}" r="${R}" fill="none" stroke="${e.color}"
       stroke-width="${SW}" stroke-dasharray="${dash} ${C-dash}" stroke-dashoffset="${-off*C}"
-      transform="rotate(-90 ${size/2} ${size/2})" stroke-linecap="butt"/>`;
+      transform="rotate(-90 ${size/2} ${size/2})" stroke-linecap="butt" data-cat="${e.id}"
+      role="button" tabindex="0" aria-label="${e.name} 지출 상세 보기"/>`;
     off+=frac;
   }
   donut.innerHTML=`<svg width="${size}" height="${size}">${arcs}</svg>
     <div class="center"><div class="cl">${centerLabel}</div>
     <div class="cv mono">${wonShort(total)}</div></div>`;
-  leg.innerHTML=entries.map(e=>`<div class="leg">
+  leg.innerHTML=entries.map(e=>`<div class="leg" data-cat="${e.id}" role="button" tabindex="0">
     <span class="sw" style="background:${e.color}"></span>
     <span class="nm">${e.icon} ${e.name}</span>
     <span class="pc mono">${Math.round(e.amt/total*100)}%</span>
     <span class="am mono">${won(e.amt)}</span></div>`).join("");
+  for(const root of [donut,leg]){
+    root.querySelectorAll("[data-cat]").forEach(el=>{
+      el.onclick=()=>openCategoryExpenseSheet(el.dataset.cat);
+      el.onkeydown=event=>{
+        if(event.key==="Enter"||event.key===" "){
+          event.preventDefault();openCategoryExpenseSheet(el.dataset.cat);
+        }
+      };
+    });
+  }
+}
+
+function categoryExpenseTransactions(categoryId,date=cur){
+  return S.transactions
+    .filter(t=>t.type==="expense"&&t.category===categoryId&&inMonth(t,date))
+    .slice().sort((a,b)=>b.date.localeCompare(a.date)||String(b.id).localeCompare(String(a.id)));
+}
+function openCategoryExpenseSheet(categoryId){
+  const category=S.categories.expense.find(c=>c.id===categoryId);
+  if(!category)return;
+  const txs=categoryExpenseTransactions(categoryId);
+  const total=txs.reduce((sum,t)=>sum+Number(t.amount||0),0);
+  $("#categoryDetailTitle").textContent=category.icon+" "+category.name+" 지출";
+  $("#categoryDetailPeriod").textContent=cur.getFullYear()+"년 "+(cur.getMonth()+1)+"월";
+  $("#categoryDetailCount").textContent=txs.length+"건";
+  $("#categoryDetailTotal").textContent="-"+won(total);
+
+  const list=$("#categoryDetailList");
+  if(!txs.length){
+    list.innerHTML=`<div class="empty"><div class="ei">◍</div><div class="em">이 달 지출 내역이 없습니다</div></div>`;
+  }else{
+    const byDay={};
+    for(const tx of txs)(byDay[tx.date]=byDay[tx.date]||[]).push(tx);
+    const weekdays=["일","월","화","수","목","금","토"];
+    let html="";
+    for(const day of Object.keys(byDay).sort().reverse()){
+      const items=byDay[day],dayTotal=items.reduce((sum,t)=>sum+Number(t.amount||0),0);
+      const date=new Date(day+"T00:00:00");
+      html+=`<div class="daygroup"><div class="dayhead">
+        <span class="dl">${date.getMonth()+1}.${date.getDate()} <span style="color:var(--muted2)">(${weekdays[date.getDay()]})</span></span>
+        <span class="dt mono neg">-${won(dayTotal)}</span></div>`;
+      for(const tx of items){
+        const account=acctById(tx.account);
+        html+=`<div class="tx" data-category-tx="${tx.id}">
+          <div class="cico" style="background:${category.color}22">${category.icon}</div>
+          <div class="info"><div class="cat">${esc(tx.memo||category.name+" 지출")}</div>
+          <div class="meta">${esc(account.name)}</div></div>
+          <div class="amt neg">-${won(tx.amount)}</div></div>`;
+      }
+      html+=`</div>`;
+    }
+    list.innerHTML=html;
+    list.querySelectorAll("[data-category-tx]").forEach(el=>
+      el.onclick=()=>openTxSheet(el.dataset.categoryTx));
+  }
+  openSheet("#categoryDetailSheet");
 }
 
 function drawBars(){
@@ -1349,7 +1433,10 @@ function switchView(v){
 $$("nav button").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 
 let openSheetSel=null;
-function openSheet(sel){$("#scrim").classList.add("show");$(sel).classList.add("show");openSheetSel=sel;}
+function openSheet(sel){
+  if(openSheetSel&&openSheetSel!==sel)$(openSheetSel).classList.remove("show");
+  $("#scrim").classList.add("show");$(sel).classList.add("show");openSheetSel=sel;
+}
 function closeSheet(){$("#scrim").classList.remove("show");
   if(openSheetSel)$(openSheetSel).classList.remove("show");openSheetSel=null;}
 $("#scrim").onclick=closeSheet;
