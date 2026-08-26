@@ -683,6 +683,13 @@ function inboxSource(it){
   if(/승인|결제|카드|체크|일시불|할부|\bpay\b/i.test(text))return "card";
   return "unknown";
 }
+function inboxProvider(it){
+  const issuer=normalizeInboxText(it.issuer);
+  const text=normalizeInboxText(String(it.issuer||"")+" "+String(it.raw||""));
+  if(/^(nh|농협|nh농협|농협은행)$/.test(issuer)||
+      /nh스마트뱅킹|nh올원뱅크|올원뱅크/.test(text))return "nh_bank";
+  return "";
+}
 function inboxTimeParts(value){
   const match=String(value||"").match(/(?:^|[^\d])([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?=$|[^\d])/);
   return match?[Number(match[1]),Number(match[2]),Number(match[3]||0)]:null;
@@ -723,14 +730,21 @@ function sameInboxTransaction(a,b){
   if(at===null||bt===null||Math.abs(at-bt)>INBOX_DUP_WINDOW)return false;
   const merchantA=normalizeInboxText(a.merchant),merchantB=normalizeInboxText(b.merchant);
   if(merchantA&&merchantB&&merchantA===merchantB)return true;
+  const issuerA=normalizeInboxText(a.issuer),issuerB=normalizeInboxText(b.issuer);
+  const providerA=inboxProvider(a),providerB=inboxProvider(b);
+  // NH스마트뱅킹과 NH올원뱅크는 같은 거래를 서로 다른 이름(NH/농협)으로 알림
+  if(providerA==="nh_bank"&&providerA===providerB&&issuerA&&issuerB&&issuerA!==issuerB)return true;
   const sourceA=inboxSource(a),sourceB=inboxSource(b);
   if((sourceA==="card"&&sourceB==="bank")||(sourceA==="bank"&&sourceB==="card"))return true;
-  const issuerA=normalizeInboxText(a.issuer),issuerB=normalizeInboxText(b.issuer);
   return Boolean(issuerA&&issuerA===issuerB&&Math.abs(at-bt)<=15000&&
     (isGenericInboxMerchant(a.merchant)||isGenericInboxMerchant(b.merchant)));
 }
+function inboxMerchantScore(value){
+  if(isGenericInboxMerchant(value))return 0;
+  return /^[\d\s*xX-]{3,}/.test(String(value||"").trim())?20:40;
+}
 function inboxItemScore(it){
-  return (isGenericInboxMerchant(it.merchant)?0:40)+
+  return inboxMerchantScore(it.merchant)+
     (inboxSource(it)==="card"?20:0)+(it.type==="cancel"?5:0)+
     (it.time?3:0)+(it.raw?2:0);
 }
