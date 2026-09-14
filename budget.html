@@ -674,7 +674,10 @@ function monthAgg(d){
       byCat[t.category]=(byCat[t.category]||0)+t.amount;}
   }
   const loanAmt=byCat["c_loan"]||0;
-  return {income,expense,net:income-expense,byCat,loanAmt,expenseExLoan:expense-loanAmt};
+  const motorcycleAmt=byCat["c_motorcycle"]||0;
+  const excludedExpenseAmt=loanAmt+motorcycleAmt;
+  return {income,expense,net:income-expense,byCat,loanAmt,motorcycleAmt,
+    excludedExpenseAmt,expenseExLoanAndMotorcycle:expense-excludedExpenseAmt};
 }
 
 /* ================= 카드 연동 (Worker) ================= */
@@ -1007,7 +1010,8 @@ function renderDash(){
   const m=monthAgg(cur);
   $("#sIncome").textContent=won(m.income);
   $("#sExpense").textContent=won(m.expense);
-  $("#sExpenseSub").textContent=m.loanAmt>0?"대출 제외 "+won(m.expenseExLoan):"";
+  $("#sExpenseSub").textContent=m.excludedExpenseAmt>0
+    ?"대출·오토바이 제외 "+won(m.expenseExLoanAndMotorcycle):"";
   $("#sNet").textContent=won(m.net);
   $("#sNet").className="v mono "+(m.net>=0?"pos":m.net<0?"neg":"");
   $("#sRate").textContent=m.income>0?"저축률 "+Math.round(m.net/m.income*100)+"%":"";
