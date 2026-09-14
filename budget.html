@@ -525,8 +525,10 @@ const DEF_CATS={
     {id:"c_food",name:"식비",icon:"🍚",color:"#ff6b6b"},
     {id:"c_cafe",name:"카페·간식",icon:"☕",color:"#f0932b"},
     {id:"c_trans",name:"교통",icon:"🚌",color:"#4ecdc4"},
+    {id:"c_motorcycle",name:"오토바이지출",icon:"🛵",color:"#e17055"},
     {id:"c_life",name:"생활용품",icon:"🧺",color:"#a29bfe"},
     {id:"c_home",name:"주거·통신",icon:"🏠",color:"#74b9ff"},
+    {id:"c_subscription",name:"구독",icon:"🔄",color:"#6c5ce7"},
     {id:"c_fun",name:"문화·여가",icon:"🎬",color:"#e056fd"},
     {id:"c_health",name:"의료·건강",icon:"💊",color:"#55efc4"},
     {id:"c_shop",name:"쇼핑",icon:"🛍️",color:"#fd79a8"},
@@ -559,24 +561,30 @@ function defaultState(){
     budgets:{}
   };
 }
+function ensureDefaultCategories(d){
+  // 기존 데이터·다른 기기 데이터·옛 백업에도 새 기본 카테고리를 빠짐없이 병합
+  d.categories=d.categories||JSON.parse(JSON.stringify(DEF_CATS));
+  for(const t of ["expense","income"]){
+    d.categories[t]=d.categories[t]||[];
+    for(let i=0;i<DEF_CATS[t].length;i++){
+      const def=DEF_CATS[t][i];
+      if(!d.categories[t].some(c=>c.id===def.id)){
+        // 기본 목록에서 다음 카테고리 앞에 삽입해 새 사용자와 같은 순서를 유지
+        const next=DEF_CATS[t].slice(i+1).find(candidate=>
+          d.categories[t].some(c=>c.id===candidate.id));
+        const nextIdx=next?d.categories[t].findIndex(c=>c.id===next.id):-1;
+        if(nextIdx>=0)d.categories[t].splice(nextIdx,0,{...def});
+        else d.categories[t].push({...def});
+      }
+    }
+  }
+  return d;
+}
 let S=load();
 function load(){
   try{const d=JSON.parse(localStorage.getItem(KEY));
     if(d&&d.accounts){
-      // 새로 추가된 기본 카테고리를 기존 데이터에 자동 병합
-      d.categories=d.categories||JSON.parse(JSON.stringify(DEF_CATS));
-      for(const t of ["expense","income"]){
-        d.categories[t]=d.categories[t]||[];
-        for(const def of DEF_CATS[t]){
-          if(!d.categories[t].some(c=>c.id===def.id)){
-            // 기타 앞에 삽입 (기타는 항상 맨 끝 유지)
-            const etcIdx=d.categories[t].findIndex(c=>/etc$/.test(c.id));
-            if(etcIdx>=0)d.categories[t].splice(etcIdx,0,def);
-            else d.categories[t].push(def);
-          }
-        }
-      }
-      return d;
+      return ensureDefaultCategories(d);
     }
   }catch(e){}
   return defaultState();
@@ -614,7 +622,7 @@ async function pullStateIfNewer(){
     if(!d.ok||!d.state)return false;
     const localTs=parseInt(localStorage.getItem(STS_KEY)||"0",10);
     if(d.state.updatedAt>localTs){
-      S=d.state.data;
+      S=ensureDefaultCategories(d.state.data);
       localStorage.setItem(KEY,JSON.stringify(S));
       localStorage.setItem(STS_KEY,String(d.state.updatedAt));
       return true;
@@ -677,12 +685,14 @@ function setWorker(o){localStorage.setItem(WKEY,JSON.stringify(o));}
 function guessCatLocal(text){
   const s=text||"";
   const rules=[
+    [/넷플릭스|유튜브\s*프리미엄|왓챠|티빙|웨이브|디즈니\s*플러스|스포티파이|멜론|구독|정기\s*결제/,"c_subscription"],
+    [/오토바이|바이크|이륜차|모터사이클|스쿠터/,"c_motorcycle"],
     [/스타벅스|투썸|이디야|메가|빽다방|공차|커피|카페|파리바게|뚜레쥬르/,"c_cafe"],
     [/배민|요기요|쿠팡이츠|맥도날드|버거킹|롯데리아|맘스터치|김밥|분식|치킨|피자|식당|GS25|CU|씨유|세븐일레븐|편의점/,"c_food"],
     [/이마트|홈플러스|롯데마트|코스트코|하나로|마트/,"c_life"],
     [/올리브영|다이소|무신사|쿠팡|11번가|G마켓|백화점|쇼핑/,"c_shop"],
     [/택시|버스|지하철|코레일|SRT|KTX|주유|칼텍스|에너지|하이패스/,"c_trans"],
-    [/CGV|메가박스|롯데시네마|넷플릭스|유튜브|PC방|노래방/,"c_fun"],
+    [/CGV|메가박스|롯데시네마|유튜브|PC방|노래방/,"c_fun"],
     [/약국|병원|의원|치과|한의원|헬스|피트니스/,"c_health"],
     [/통신|전기|가스|수도|관리비|월세/,"c_home"],
     [/대출|이자|원리금|캐피탈|카드론|리볼빙/,"c_loan"],
@@ -1461,7 +1471,7 @@ $("#importFile").onchange=e=>{
   const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);
     if(!d.accounts||!d.transactions)throw 0;
-    S=d;save();renderAll();toast("복원됐습니다");
+    S=ensureDefaultCategories(d);save();renderAll();toast("복원됐습니다");
   }catch(err){toast("올바른 백업 파일이 아닙니다");}
   e.target.value="";};
   r.readAsText(f);
