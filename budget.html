@@ -362,7 +362,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
         <button class="mini" id="testWorker">테스트</button>
       </div>
       <div class="setrow">
-        <div><div class="sl">기기 간 동기화</div><div class="sd" id="syncStatus">계좌·거래·예산을 다른 기기와 공유</div></div>
+        <div><div class="sl">기기 간 동기화</div><div class="sd" id="syncStatus">양쪽 거래를 합쳐서 안전하게 공유</div></div>
         <button class="mini" id="syncNow">지금 동기화</button>
       </div>
     </div>
@@ -377,13 +377,17 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
         <button class="mini" id="importBtn">불러오기</button>
       </div>
       <div class="setrow">
+        <div><div class="sl">자동 복구 기록</div><div class="sd" id="historyStatus">최근 저장·동기화 전 장부 보관</div></div>
+        <button class="mini" id="restoreHistory">복구</button>
+      </div>
+      <div class="setrow">
         <div><div class="sl">전체 초기화</div><div class="sd">모든 거래·계좌·설정 삭제</div></div>
         <button class="mini" id="resetBtn" style="color:var(--expense)">초기화</button>
       </div>
     </div>
     <div class="section-h"><span class="t">현황</span><span class="rule"></span></div>
     <div class="card"><div id="statsInfo" class="mono" style="font-size:12px;color:var(--muted);line-height:2"></div></div>
-    <div class="hint">데이터는 이 브라우저에만 저장됩니다.<br>기기·브라우저를 바꾸면 백업 파일로 옮겨주세요.</div>
+    <div class="hint">데이터는 이 브라우저와 연동 서버에 함께 저장됩니다.<br>중요한 시점에는 백업 파일도 보관해주세요.</div>
     <input type="file" id="importFile" accept="application/json" hidden>
   </section>
 </main>
@@ -558,7 +562,10 @@ function defaultState(){
     ],
     categories:JSON.parse(JSON.stringify(DEF_CATS)),
     transactions:[],
-    budgets:{}
+    budgets:{},
+    deletedTransactions:{},
+    deletedAccounts:{},
+    schemaVersion:2
   };
 }
 function ensureDefaultCategories(d){
@@ -580,20 +587,129 @@ function ensureDefaultCategories(d){
   }
   return d;
 }
+function cloneData(value){return JSON.parse(JSON.stringify(value));}
+function normalizeDeletedMap(value){
+  const result={};
+  if(Array.isArray(value)){
+    for(const id of value)if(id!==null&&id!==undefined)result[String(id)]=1;
+  }else if(value&&typeof value==="object"){
+    for(const [id,deletedAt] of Object.entries(value)){
+      const timestamp=Number(deletedAt);
+      if(id&&Number.isFinite(timestamp)&&timestamp>0)result[id]=timestamp;
+    }
+  }
+  return result;
+}
+function ensureLedgerState(data){
+  const d=data&&typeof data==="object"?data:defaultState();
+  d.accounts=Array.isArray(d.accounts)?d.accounts:defaultState().accounts;
+  d.transactions=Array.isArray(d.transactions)?d.transactions:[];
+  d.budgets=d.budgets&&typeof d.budgets==="object"?d.budgets:{};
+  d.deletedTransactions=normalizeDeletedMap(d.deletedTransactions);
+  d.deletedAccounts=normalizeDeletedMap(d.deletedAccounts);
+  d.schemaVersion=2;
+  return ensureDefaultCategories(d);
+}
+function mergeDeletedMaps(a,b){
+  const result={...normalizeDeletedMap(a)};
+  for(const [id,timestamp] of Object.entries(normalizeDeletedMap(b))){
+    result[id]=Math.max(Number(result[id])||0,timestamp);
+  }
+  return result;
+}
+function itemUpdatedAt(item){
+  const timestamp=Number(item&&item.updatedAt);
+  return Number.isFinite(timestamp)&&timestamp>0?timestamp:0;
+}
+function mergeItemLists(localItems,remoteItems,deleted,localStateTs,remoteStateTs){
+  const selected=new Map();
+  const offer=(item,sourceTs,sourcePriority)=>{
+    if(!item||item.id===null||item.id===undefined)return;
+    const id=String(item.id),updatedAt=itemUpdatedAt(item);
+    const current=selected.get(id);
+    if(!current||updatedAt>current.updatedAt||
+        (updatedAt===current.updatedAt&&sourceTs>current.sourceTs)||
+        (updatedAt===current.updatedAt&&sourceTs===current.sourceTs&&sourcePriority>current.sourcePriority)){
+      selected.set(id,{item:cloneData(item),updatedAt,sourceTs,sourcePriority});
+    }
+  };
+  for(const item of remoteItems||[])offer(item,remoteStateTs,0);
+  for(const item of localItems||[])offer(item,localStateTs,1);
+
+  for(const [id,entry] of [...selected]){
+    const deletedAt=Number(deleted[id])||0;
+    // 이전 버전 항목(updatedAt 없음)은 새 삭제 기록보다 우선할 수 없음
+    if(deletedAt>0&&deletedAt>=entry.updatedAt)selected.delete(id);
+  }
+
+  const localFirst=localStateTs>=remoteStateTs;
+  const order=[...(localFirst?(localItems||[]):(remoteItems||[])),
+    ...(localFirst?(remoteItems||[]):(localItems||[]))]
+    .map(item=>String(item&&item.id)).filter(Boolean);
+  const result=[],used=new Set();
+  for(const id of order){
+    if(used.has(id)||!selected.has(id))continue;
+    result.push(selected.get(id).item);used.add(id);
+  }
+  for(const [id,entry] of selected){
+    if(!used.has(id))result.push(entry.item);
+  }
+  return result;
+}
+function mergeLedgerStates(localState,remoteState,localStateTs=0,remoteStateTs=0){
+  const local=ensureLedgerState(cloneData(localState||defaultState()));
+  const remote=ensureLedgerState(cloneData(remoteState||defaultState()));
+  const localTs=Number(localStateTs)||0,remoteTs=Number(remoteStateTs)||0;
+  const base=cloneData(localTs>=remoteTs?local:remote);
+  const deletedTransactions=mergeDeletedMaps(
+    local.deletedTransactions,remote.deletedTransactions);
+  const deletedAccounts=mergeDeletedMaps(local.deletedAccounts,remote.deletedAccounts);
+  base.transactions=mergeItemLists(local.transactions,remote.transactions,
+    deletedTransactions,localTs,remoteTs);
+  base.accounts=mergeItemLists(local.accounts,remote.accounts,
+    deletedAccounts,localTs,remoteTs);
+  base.deletedTransactions=deletedTransactions;
+  base.deletedAccounts=deletedAccounts;
+  base.schemaVersion=2;
+  return ensureLedgerState(base);
+}
 let S=load();
 function load(){
   try{const d=JSON.parse(localStorage.getItem(KEY));
     if(d&&d.accounts){
-      return ensureDefaultCategories(d);
+      return ensureLedgerState(d);
     }
   }catch(e){}
   return defaultState();
 }
 const STS_KEY="ledger_state_ts";
+const HISTORY_KEY="ledger_state_history_v1";
+function getStateHistory(){
+  try{
+    const history=JSON.parse(localStorage.getItem(HISTORY_KEY)||"[]");
+    return Array.isArray(history)?history:[];
+  }catch(e){return [];}
+}
+function snapshotState(reason,state=S){
+  try{
+    const data=JSON.stringify(ensureLedgerState(cloneData(state)));
+    const history=getStateHistory();
+    if(history[0]&&history[0].data===data)return;
+    history.unshift({at:Date.now(),reason:reason||"자동 저장",data});
+    while(history.length>12)history.pop();
+    while(history.length>2&&JSON.stringify(history).length>1500000)history.pop();
+    localStorage.setItem(HISTORY_KEY,JSON.stringify(history));
+  }catch(e){/* 복구 기록 실패가 실제 저장을 막지 않음 */}
+}
+function storeLocalState(timestamp){
+  localStorage.setItem(KEY,JSON.stringify(S));
+  localStorage.setItem(STS_KEY,String(timestamp));
+}
 function save(){
   const ts=Date.now();
-  localStorage.setItem(KEY,JSON.stringify(S));
-  localStorage.setItem(STS_KEY,String(ts));
+  S=ensureLedgerState(S);
+  snapshotState("저장 후",S);
+  storeLocalState(ts);
   pushStateDebounced(ts);
 }
 let pushTimer=null;
@@ -601,34 +717,55 @@ function pushStateDebounced(ts){
   const w=getWorker();
   if(!w.url||!w.key)return;
   clearTimeout(pushTimer);
-  pushTimer=setTimeout(()=>pushState(ts),1200);
+  pushTimer=setTimeout(()=>pushState(ts),500);
 }
-async function pushState(ts){
-  const w=getWorker();
-  if(!w.url||!w.key)return;
-  try{
-    await fetch(w.url.replace(/\/+$/,"")+"/state?k="+encodeURIComponent(w.key),{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({data:S,updatedAt:ts})
-    });
-  }catch(e){/* 실패해도 로컬 데이터는 안전함 */}
+async function readRemoteState(w){
+  const response=await fetch(w.url.replace(/\/+$/,"")+"/state?k="+encodeURIComponent(w.key));
+  const payload=await response.json();
+  if(!response.ok||!payload.ok)throw new Error("state fetch failed");
+  return payload.state||null;
 }
-async function pullStateIfNewer(){
-  const w=getWorker();
-  if(!w.url||!w.key)return false;
+async function postRemoteState(w,data,updatedAt){
+  const response=await fetch(w.url.replace(/\/+$/,"")+"/state?k="+encodeURIComponent(w.key),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({data,updatedAt})
+  });
+  if(!response.ok)throw new Error("state save failed");
   try{
-    const r=await fetch(w.url.replace(/\/+$/,"")+"/state?k="+encodeURIComponent(w.key));
-    const d=await r.json();
-    if(!d.ok||!d.state)return false;
-    const localTs=parseInt(localStorage.getItem(STS_KEY)||"0",10);
-    if(d.state.updatedAt>localTs){
-      S=ensureDefaultCategories(d.state.data);
-      localStorage.setItem(KEY,JSON.stringify(S));
-      localStorage.setItem(STS_KEY,String(d.state.updatedAt));
-      return true;
+    const payload=await response.json();
+    if(payload.ok===false)throw new Error("state save rejected");
+  }catch(e){if(e.message==="state save rejected")throw e;}
+}
+async function syncMergedState(ts){
+  const w=getWorker();
+  if(!w.url||!w.key)return {ok:false,changed:false,reason:"not-configured"};
+  snapshotState("동기화 전",S);
+  let changed=false,posted=false;
+  let localTs=parseInt(localStorage.getItem(STS_KEY)||"0",10);
+  try{
+    // 두 번 확인·병합해 거의 동시에 저장한 다른 기기의 기록도 다시 합침
+    for(let round=0;round<2;round++){
+      const remoteWrapper=await readRemoteState(w);
+      const remoteState=remoteWrapper&&remoteWrapper.data?remoteWrapper.data:defaultState();
+      const remoteTs=Number(remoteWrapper&&remoteWrapper.updatedAt)||0;
+      const before=JSON.stringify(S);
+      S=mergeLedgerStates(S,remoteState,localTs,remoteTs);
+      if(JSON.stringify(S)!==before)changed=true;
+      const syncTs=Math.max(Date.now(),Number(ts)||0,localTs,remoteTs);
+      storeLocalState(syncTs);
+      await postRemoteState(w,S,syncTs);
+      posted=true;localTs=syncTs;
     }
-  }catch(e){}
-  return false;
+    return {ok:true,changed};
+  }catch(e){
+    // 서버를 읽지 못했을 때는 절대 덮어쓰지 않고 로컬 기록을 그대로 보존
+    return {ok:posted,changed,reason:"network"};
+  }
+}
+async function pushState(ts){return syncMergedState(ts);}
+async function pullStateIfNewer(){
+  const result=await syncMergedState(Date.now());
+  return !!result.changed;
 }
 
 /* ---------- helpers ---------- */
@@ -931,7 +1068,8 @@ async function inboxRegister(it,card,w){
     inboxIds:it.inboxIds||[String(it.id)],
     inboxTime:it.time||"",
     inboxSource:inboxSource(it),
-    inboxFingerprint:inboxRawFingerprint(it)
+    inboxFingerprint:inboxRawFingerprint(it),
+    updatedAt:Date.now()
   });
   save();
   const cleared=await inboxDelete(it,card,w,true);
@@ -964,20 +1102,24 @@ $("#editWorker").onclick=async()=>{
   if(key===null)return;
   setWorker({url:url.trim(),key:key.trim()});
   renderSettings();toast("저장됐습니다 — 동기화 시도 중…");
-  // 처음 연결 시: 다른 기기 데이터가 있으면 받아오고, 없으면 지금 데이터를 서버에 올림
-  const changed=await pullStateIfNewer();
-  if(changed){renderAll();toast("다른 기기 데이터를 불러왔습니다");}
-  else{await pushState(Date.now());toast("이 기기 데이터를 서버에 저장했습니다");}
+  const result=await pushState(Date.now());
+  if(result.ok){
+    renderAll();toast(result.changed?"다른 기기 기록과 안전하게 합쳤습니다":"이 기기 데이터를 서버에 저장했습니다");
+  }else toast("연결하지 못했습니다 — 이 기기 기록은 그대로 보존됩니다");
 };
 $("#syncNow").onclick=async()=>{
   const w=getWorker();
   if(!w.url||!w.key){toast("먼저 Worker 주소를 설정하세요");return;}
   $("#syncStatus").textContent="동기화 중…";
-  const changed=await pullStateIfNewer();
-  if(changed)renderAll();
-  await pushState(Date.now());
-  $("#syncStatus").textContent="마지막 동기화 "+new Date().toLocaleTimeString("ko-KR");
-  toast(changed?"최신 데이터를 불러왔습니다":"동기화 완료");
+  const result=await pushState(Date.now());
+  if(result.ok){
+    renderAll();
+    $("#syncStatus").textContent="마지막 동기화 "+new Date().toLocaleTimeString("ko-KR");
+    toast(result.changed?"양쪽 기록을 합쳐 동기화했습니다":"동기화 완료");
+  }else{
+    $("#syncStatus").textContent="동기화 실패 · 이 기기 기록은 보존됨";
+    toast("서버를 읽지 못해 동기화를 중단했습니다");
+  }
 };
 $("#testWorker").onclick=async()=>{
   const w=getWorker();
@@ -1285,6 +1427,9 @@ function renderSettings(){
   const w=getWorker();
   const ws=$("#workerStatus");
   if(ws)ws.textContent=w.url?"설정됨":"미설정";
+  const history=getStateHistory(),hs=$("#historyStatus");
+  if(hs)hs.textContent=history.length
+    ?"최근 "+history.length+"개 장부 사본 보관 중":"저장 후부터 자동으로 장부 사본 보관";
 }
 
 /* ================= SHEETS ================= */
@@ -1361,20 +1506,24 @@ $("#saveTx").onclick=()=>{
   if(curType==="transfer"&&$("#acctSelect").value===$("#toAcctSelect").value){
     toast("같은 계좌로는 이체할 수 없습니다");return;}
   const id=$("#editId").value;
+  const updatedAt=Date.now();
   const tx={
     id:id||uid(),type:curType,amount:amt,
     category:curType==="transfer"?null:curCat,
     account:$("#acctSelect").value,
     toAccount:curType==="transfer"?$("#toAcctSelect").value:null,
     date:$("#dateInput").value,
-    memo:$("#memoInput").value.trim()
+    memo:$("#memoInput").value.trim(),
+    updatedAt
   };
   if(id){const i=S.transactions.findIndex(x=>x.id===id);S.transactions[i]={...S.transactions[i],...tx};}
   else S.transactions.push(tx);
+  delete S.deletedTransactions[tx.id];
   save();closeSheet();renderAll();toast(id?"수정됐습니다":"저장됐습니다");
 };
 $("#deleteTx").onclick=()=>{
   const id=$("#editId").value;
+  S.deletedTransactions[id]=Date.now();
   S.transactions=S.transactions.filter(x=>x.id!==id);
   save();closeSheet();renderAll();toast("삭제됐습니다");
 };
@@ -1400,9 +1549,16 @@ $("#saveAcct").onclick=()=>{
   if(!name){toast("계좌 이름을 입력하세요");return;}
   const init=parseInt(($("#acctInit").value||"0").replace(/[^\d]/g,""))||0;
   const id=$("#acctEditId").value;
-  if(id){const a=acctById(id);a.name=name;a.type=$("#acctType").value;a.init=init;}
-  else{S.accounts.push({id:uid(),name,type:$("#acctType").value,init,
-    color:ACCT_COLORS[S.accounts.length%ACCT_COLORS.length]});}
+  const updatedAt=Date.now();
+  if(id){
+    const a=acctById(id);a.name=name;a.type=$("#acctType").value;
+    a.init=init;a.updatedAt=updatedAt;delete S.deletedAccounts[id];
+  }else{
+    const newId=uid();
+    S.accounts.push({id:newId,name,type:$("#acctType").value,init,
+      color:ACCT_COLORS[S.accounts.length%ACCT_COLORS.length],updatedAt});
+    delete S.deletedAccounts[newId];
+  }
   save();closeSheet();renderAll();toast(id?"수정됐습니다":"추가됐습니다");
 };
 $("#deleteAcct").onclick=()=>{
@@ -1410,6 +1566,7 @@ $("#deleteAcct").onclick=()=>{
   const used=S.transactions.some(t=>t.account===id||t.toAccount===id);
   if(used){toast("거래 내역이 있어 삭제할 수 없습니다");return;}
   if(S.accounts.length<=1){toast("최소 1개 계좌가 필요합니다");return;}
+  S.deletedAccounts[id]=Date.now();
   S.accounts=S.accounts.filter(a=>a.id!==id);
   save();closeSheet();renderAll();toast("삭제됐습니다");
 };
@@ -1463,6 +1620,14 @@ function shift(n){cur.setMonth(cur.getMonth()+n);renderAll();}
 ["#nextM","#nextM2","#nextM3"].forEach(s=>$(s).onclick=()=>shift(1));
 
 /* ================= DATA IO ================= */
+function prepareRestoredState(data){
+  const restored=ensureLedgerState(cloneData(data)),now=Date.now();
+  restored.transactions=restored.transactions.map(tx=>({...tx,updatedAt:now}));
+  restored.accounts=restored.accounts.map(account=>({...account,updatedAt:now}));
+  for(const tx of restored.transactions)delete restored.deletedTransactions[tx.id];
+  for(const account of restored.accounts)delete restored.deletedAccounts[account.id];
+  return restored;
+}
 $("#exportBtn").onclick=()=>{
   const blob=new Blob([JSON.stringify(S,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
@@ -1475,14 +1640,43 @@ $("#importFile").onchange=e=>{
   const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);
     if(!d.accounts||!d.transactions)throw 0;
-    S=ensureDefaultCategories(d);save();renderAll();toast("복원됐습니다");
+    snapshotState("백업 복원 전",S);
+    S=prepareRestoredState(d);save();renderAll();toast("복원됐습니다");
   }catch(err){toast("올바른 백업 파일이 아닙니다");}
   e.target.value="";};
   r.readAsText(f);
 };
+$("#restoreHistory").onclick=()=>{
+  const history=getStateHistory();
+  if(!history.length){toast("아직 복구 기록이 없습니다");return;}
+  const choices=history.slice(0,10).map((entry,index)=>{
+    let count="?";
+    try{count=JSON.parse(entry.data).transactions.length;}catch(e){}
+    return (index+1)+". "+new Date(entry.at).toLocaleString("ko-KR")+
+      " · "+count+"건 · "+(entry.reason||"자동 저장");
+  }).join("\n");
+  const answer=prompt("복구할 장부 번호를 입력하세요.\n\n"+choices,"1");
+  if(answer===null)return;
+  const index=parseInt(answer,10)-1,entry=history[index];
+  if(!entry){toast("올바른 번호를 입력하세요");return;}
+  let restored;
+  try{restored=JSON.parse(entry.data);}catch(e){toast("복구 기록을 읽지 못했습니다");return;}
+  if(!confirm(new Date(entry.at).toLocaleString("ko-KR")+
+      " 장부를 현재 기록과 합쳐 복구할까요?"))return;
+  snapshotState("복구 실행 전",S);
+  S=prepareRestoredState(restored);save();renderAll();toast("선택한 장부를 복구했습니다");
+};
 $("#resetBtn").onclick=()=>{
   if(confirm("모든 데이터가 삭제됩니다. 계속할까요?")){
-    S=defaultState();save();renderAll();switchView("dash");toast("초기화됐습니다");}
+    const now=Date.now(),fresh=defaultState();
+    fresh.deletedTransactions=mergeDeletedMaps(S.deletedTransactions,
+      Object.fromEntries(S.transactions.map(tx=>[tx.id,now])));
+    fresh.deletedAccounts=mergeDeletedMaps(S.deletedAccounts,
+      Object.fromEntries(S.accounts.map(account=>[account.id,now])));
+    fresh.accounts=fresh.accounts.map(account=>({...account,updatedAt:now}));
+    for(const account of fresh.accounts)delete fresh.deletedAccounts[account.id];
+    snapshotState("전체 초기화 전",S);
+    S=fresh;save();renderAll();switchView("dash");toast("초기화됐습니다");}
 };
 
 /* ================= MISC ================= */
@@ -1498,9 +1692,15 @@ setInterval(tick,1000);tick();
 // enter to save in amount
 $("#amtInput").addEventListener("keydown",e=>{if(e.key==="Enter")$("#saveTx").click();});
 
+snapshotState("앱 열기",S);
 renderAll();
-// 앱을 열 때 다른 기기의 더 최신 데이터가 있으면 자동으로 받아옴
-pullStateIfNewer().then(changed=>{if(changed){renderAll();toast("다른 기기 데이터로 동기화됐습니다");}});
+// 앱을 열 때 양쪽 기기의 거래를 자동으로 합쳐 동기화
+pushState(Date.now()).then(result=>{
+  if(result&&result.ok&&result.changed){
+    renderAll();toast("다른 기기 기록과 안전하게 합쳤습니다");
+  }
+});
 </script>
 </body>
 </html>
+
