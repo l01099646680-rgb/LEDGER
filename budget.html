@@ -76,10 +76,15 @@ main{max-width:760px;margin:0 auto;padding:18px 16px}
 .expense-sub .excluded{border-top:1px solid var(--line);margin-top:2px;padding-top:3px}
 .expense-sub .excluded b{color:var(--text)}
 .expense-sub .short{display:none}
+.income-sub{font-family:var(--mono);font-size:10.5px;color:var(--muted2);
+  display:flex;flex-direction:column;gap:2px;margin-top:7px}
+.income-sub .irow{display:flex;align-items:center;justify-content:space-between;gap:7px;
+  white-space:nowrap}
+.income-sub b{font-weight:500;color:var(--muted)}
 @media(max-width:520px){
   .stat{padding:12px 10px}
   .stat .v{font-size:16px}
-  .expense-sub{font-size:9px}
+  .expense-sub,.income-sub{font-size:9px}
   .expense-sub .long{display:none}
   .expense-sub .short{display:inline}
 }
@@ -291,6 +296,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
       <div class="stat">
         <div class="k"><span class="dot" style="background:var(--income)"></span>수입</div>
         <div class="v pos mono" id="sIncome">₩0</div>
+        <div class="income-sub" id="incomeBreakdown"></div>
       </div>
       <div class="stat">
         <div class="k"><span class="dot" style="background:var(--expense)"></span>지출</div>
@@ -822,17 +828,22 @@ function netWorth(){return S.accounts.reduce((s,a)=>s+acctBalance(a.id),0);}
 
 /* ---------- month aggregates ---------- */
 function monthAgg(d){
-  let income=0,expense=0; const byCat={};
+  let income=0,expense=0; const byCat={},byIncomeCat={};
   for(const t of S.transactions){
     if(!inMonth(t,d))continue;
-    if(t.type==="income")income+=t.amount;
+    if(t.type==="income"){
+      income+=t.amount;
+      const incomeCategory=S.categories.income.some(c=>c.id===t.category)
+        ?t.category:"i_etc";
+      byIncomeCat[incomeCategory]=(byIncomeCat[incomeCategory]||0)+t.amount;
+    }
     else if(t.type==="expense"){expense+=t.amount;
       byCat[t.category]=(byCat[t.category]||0)+t.amount;}
   }
   const loanAmt=byCat["c_loan"]||0;
   const motorcycleAmt=byCat["c_motorcycle"]||0;
   const excludedExpenseAmt=loanAmt+motorcycleAmt;
-  return {income,expense,net:income-expense,byCat,loanAmt,motorcycleAmt,
+  return {income,expense,net:income-expense,byCat,byIncomeCat,loanAmt,motorcycleAmt,
     excludedExpenseAmt,expenseExLoanAndMotorcycle:expense-excludedExpenseAmt};
 }
 
@@ -1170,6 +1181,9 @@ function renderDash(){
   ["#curMonth","#curMonth2","#curMonth3"].forEach(s=>$(s).textContent=label);
   const m=monthAgg(cur);
   $("#sIncome").textContent=won(m.income);
+  $("#incomeBreakdown").innerHTML=S.categories.income.map(category=>
+    `<div class="irow"><span>${esc(category.name)}</span><b>${won(m.byIncomeCat[category.id]||0)}</b></div>`
+  ).join("");
   $("#sExpense").textContent=won(m.expense);
   $("#sLoanExpense").textContent=won(m.loanAmt);
   $("#sMotorcycleExpense").textContent=won(m.motorcycleAmt);
@@ -1456,8 +1470,10 @@ function renderSettings(){
 let curType="expense",curCat=null;
 function openTxSheet(id){
   const del=$("#deleteTx");
+  let editTx=null;
   if(id){
     const t=S.transactions.find(x=>x.id===id);
+    editTx=t;
     $("#sheetTitle").textContent="거래 수정";
     $("#editId").value=id;
     setType(t.type);
@@ -1465,8 +1481,6 @@ function openTxSheet(id){
     curCat=t.category||null;
     $("#dateInput").value=t.date;
     $("#memoInput").value=t.memo||"";
-    $("#acctSelect").value=t.account;
-    if(t.type==="transfer")$("#toAcctSelect").value=t.toAccount;
     del.style.display="";
   }else{
     $("#sheetTitle").textContent="거래 입력";
@@ -1477,7 +1491,8 @@ function openTxSheet(id){
     $("#memoInput").value="";
     del.style.display="none";
   }
-  fillCatPick();fillAcctSelects();
+  fillCatPick();
+  fillAcctSelects(editTx&&editTx.account,editTx&&editTx.toAccount);
   openSheet("#txSheet");
   if(!id)setTimeout(()=>$("#amtInput").focus(),300);
 }
@@ -1501,11 +1516,18 @@ function fillCatPick(){
   $$("#catPick button").forEach(b=>b.onclick=()=>{
     curCat=b.dataset.cat;fillCatPick();});
 }
-function fillAcctSelects(){
+function fillAcctSelects(selectedAccount,selectedToAccount){
   const opts=S.accounts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");
   $("#acctSelect").innerHTML=opts;
   $("#toAcctSelect").innerHTML=opts;
-  if(S.accounts.length>1)$("#toAcctSelect").selectedIndex=1;
+  if(selectedAccount&&S.accounts.some(a=>a.id===selectedAccount)){
+    $("#acctSelect").value=selectedAccount;
+  }
+  if(selectedToAccount&&S.accounts.some(a=>a.id===selectedToAccount)){
+    $("#toAcctSelect").value=selectedToAccount;
+  }else if(S.accounts.length>1){
+    $("#toAcctSelect").selectedIndex=1;
+  }
 }
 $("#typeSeg").querySelectorAll("button").forEach(b=>b.onclick=()=>setType(b.dataset.t));
 
