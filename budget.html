@@ -81,10 +81,17 @@ main{max-width:760px;margin:0 auto;padding:18px 16px}
 .income-sub .irow{display:flex;align-items:center;justify-content:space-between;gap:7px;
   white-space:nowrap}
 .income-sub b{font-weight:500;color:var(--muted)}
+.wealth-sub{font-family:var(--mono);font-size:10.5px;color:var(--muted2);
+  display:flex;flex-direction:column;gap:2px;margin-top:7px}
+.wealth-sub .wrow{display:flex;align-items:center;justify-content:space-between;gap:7px;
+  white-space:nowrap}
+.wealth-sub b{font-weight:500;color:var(--muted)}
+.wealth-sub .total{border-top:1px solid var(--line);margin-top:2px;padding-top:3px}
+.wealth-sub .total b{color:var(--transfer)}
 @media(max-width:520px){
   .stat{padding:12px 10px}
   .stat .v{font-size:16px}
-  .expense-sub,.income-sub{font-size:9px}
+  .expense-sub,.income-sub,.wealth-sub{font-size:9px}
   .expense-sub .long{display:none}
   .expense-sub .short{display:inline}
 }
@@ -311,6 +318,11 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
         <div class="k"><span class="dot" style="background:var(--amber)"></span>잔액</div>
         <div class="v mono" id="sNet">₩0</div>
         <div class="sub" id="sRate"></div>
+        <div class="wealth-sub">
+          <div class="wrow"><span>투자</span><b id="sInvestTransfer">₩0</b></div>
+          <div class="wrow"><span>저축</span><b id="sSavingTransfer">₩0</b></div>
+          <div class="wrow total"><span>순이체</span><b id="sWealthTransfer">₩0</b></div>
+        </div>
       </div>
     </div>
 
@@ -564,6 +576,7 @@ const DEF_CATS={
     {id:"c_event",name:"경조사",icon:"🎁",color:"#fab1a0"},
     {id:"c_loan",name:"대출",icon:"🏦",color:"#636e72"},
     {id:"c_insure",name:"보험",icon:"🛡️",color:"#00b894"},
+    {id:"c_invest_loss",name:"투자손실",icon:"📉",color:"#d63031"},
     {id:"c_etc",name:"기타",icon:"📦",color:"#95a5a6"}
   ],
   income:[
@@ -828,7 +841,8 @@ function netWorth(){return S.accounts.reduce((s,a)=>s+acctBalance(a.id),0);}
 
 /* ---------- month aggregates ---------- */
 function monthAgg(d){
-  let income=0,expense=0; const byCat={},byIncomeCat={};
+  let income=0,expense=0,investTransfer=0,savingTransfer=0;
+  const byCat={},byIncomeCat={};
   for(const t of S.transactions){
     if(!inMonth(t,d))continue;
     if(t.type==="income"){
@@ -839,11 +853,20 @@ function monthAgg(d){
     }
     else if(t.type==="expense"){expense+=t.amount;
       byCat[t.category]=(byCat[t.category]||0)+t.amount;}
+    else if(t.type==="transfer"){
+      const from=(S.accounts.find(a=>a.id===t.account)||{}).type;
+      const to=(S.accounts.find(a=>a.id===t.toAccount)||{}).type;
+      if(to==="invest"&&from!=="invest")investTransfer+=t.amount;
+      if(from==="invest"&&to!=="invest")investTransfer-=t.amount;
+      if(to==="saving"&&from!=="saving")savingTransfer+=t.amount;
+      if(from==="saving"&&to!=="saving")savingTransfer-=t.amount;
+    }
   }
   const loanAmt=byCat["c_loan"]||0;
   const motorcycleAmt=byCat["c_motorcycle"]||0;
   const excludedExpenseAmt=loanAmt+motorcycleAmt;
   return {income,expense,net:income-expense,byCat,byIncomeCat,loanAmt,motorcycleAmt,
+    investTransfer,savingTransfer,wealthTransfer:investTransfer+savingTransfer,
     excludedExpenseAmt,expenseExLoanAndMotorcycle:expense-excludedExpenseAmt};
 }
 
@@ -1191,6 +1214,9 @@ function renderDash(){
   $("#sNet").textContent=won(m.net);
   $("#sNet").className="v mono "+(m.net>=0?"pos":m.net<0?"neg":"");
   $("#sRate").textContent=m.income>0?"저축률 "+Math.round(m.net/m.income*100)+"%":"";
+  $("#sInvestTransfer").textContent=won(m.investTransfer);
+  $("#sSavingTransfer").textContent=won(m.savingTransfer);
+  $("#sWealthTransfer").textContent=won(m.wealthTransfer);
 
   drawDonut("#donut","#legend",m.byCat,m.expense,"지출");
   drawBars();
