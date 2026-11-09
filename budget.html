@@ -569,6 +569,7 @@ const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
 const DEF_CATS={
   expense:[
     {id:"c_food",name:"식비",icon:"🍚",color:"#ff6b6b"},
+    {id:"c_grocery",name:"장보기·식재료",icon:"🛒",color:"#6ab04c"},
     {id:"c_cafe",name:"카페·간식",icon:"☕",color:"#f0932b"},
     {id:"c_trans",name:"교통",icon:"🚌",color:"#4ecdc4"},
     {id:"c_motorcycle",name:"오토바이지출",icon:"🛵",color:"#e17055"},
@@ -886,8 +887,9 @@ function guessCatLocal(text){
     [/넷플릭스|유튜브\s*프리미엄|왓챠|티빙|웨이브|디즈니\s*플러스|스포티파이|멜론|구독|정기\s*결제/,"c_subscription"],
     [/오토바이|바이크|이륜차|모터사이클|스쿠터/,"c_motorcycle"],
     [/스타벅스|투썸|이디야|메가|빽다방|공차|커피|카페|파리바게|뚜레쥬르/,"c_cafe"],
+    [/이마트|홈플러스|롯데마트|코스트코|하나로|마트|슈퍼|식자재|정육|청과|농산물|계란|달걀|쌀|식용유|반찬|장보기/,"c_grocery"],
     [/배민|요기요|쿠팡이츠|맥도날드|버거킹|롯데리아|맘스터치|김밥|분식|치킨|피자|식당|GS25|CU|씨유|세븐일레븐|편의점/,"c_food"],
-    [/이마트|홈플러스|롯데마트|코스트코|하나로|마트/,"c_life"],
+    [/생활용품|생필품|휴지|세제|샴푸|주방용품|욕실용품|청소용품/,"c_life"],
     [/올리브영|다이소|무신사|쿠팡|11번가|G마켓|백화점|쇼핑/,"c_shop"],
     [/택시|버스|지하철|코레일|SRT|KTX|주유|칼텍스|에너지|하이패스/,"c_trans"],
     [/CGV|메가박스|롯데시네마|유튜브|PC방|노래방/,"c_fun"],
